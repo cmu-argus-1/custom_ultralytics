@@ -20,6 +20,10 @@ import random
 import shutil
 import subprocess
 import time
+# =============
+import os
+from pathlib import Path
+# =============
 
 import numpy as np
 import torch
@@ -65,7 +69,7 @@ class Tuner:
         model.tune(space={key1: val1, key2: val2})  # custom search space dictionary
         ```
     """
-
+    
     def __init__(self, args=DEFAULT_CFG, _callbacks=None):
         """
         Initialize the Tuner with configurations.
@@ -98,8 +102,13 @@ class Tuner:
             "mixup": (0.0, 1.0),  # image mixup (probability)
             "copy_paste": (0.0, 1.0),  # segment copy-paste (probability)
         }
+    
         self.args = get_cfg(overrides=args)
         self.tune_dir = get_save_dir(self.args, name="tune")
+        # =================================================================
+        new_tune_dir = os.path.join(os.path.dirname(self.tune_dir), f"{self.args.name}_result")
+        self.tune_dir = Path(new_tune_dir)
+        # =================================================================
         self.tune_csv = self.tune_dir / "tune_results.csv"
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
         self.prefix = colorstr("Tuner: ")
@@ -208,7 +217,12 @@ class Tuner:
             # Get best results
             x = np.loadtxt(self.tune_csv, ndmin=2, delimiter=",", skiprows=1)
             fitness = x[:, 0]  # first column
+
+            ###### MODIFIED
             best_idx = fitness.argmax()
+            #best_idx = fitness.argmin()
+            ###### MODIFIED
+
             best_is_current = best_idx == i
             if best_is_current:
                 best_save_dir = save_dir

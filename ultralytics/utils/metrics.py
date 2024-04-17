@@ -654,6 +654,12 @@ class Metric(SimpleClass):
         self.all_ap = []  # (nc, 10)
         self.ap_class_index = []  # (nc, )
         self.nc = 0
+        # ===================== CUSTOMIZED MSE ========================
+        self.average_mse = 0
+        self.mse = []
+        self.avg_l2 = 0
+        self.l2 = []
+        # ===================== CUSTOMIZED MSE ========================
 
     @property
     def ap50(self):
@@ -725,13 +731,15 @@ class Metric(SimpleClass):
         """
         return self.all_ap.mean() if len(self.all_ap) else 0.0
 
+    # ===================== CUSTOMIZED MSE ========================
     def mean_results(self):
         """Mean of results, return mp, mr, map50, map."""
-        return [self.mp, self.mr, self.map50, self.map]
+        return [self.avg_l2, self.average_mse, self.mp, self.mr, self.map50, self.map]
 
     def class_result(self, i):
         """Class-aware result, return p[i], r[i], ap50[i], ap[i]."""
-        return self.p[i], self.r[i], self.ap50[i], self.ap[i]
+        return self.l2[i], self.mse[i], self.p[i], self.r[i], self.ap50[i], self.ap[i]
+    # ===================== CUSTOMIZED MSE ========================
 
     @property
     def maps(self):
@@ -741,10 +749,13 @@ class Metric(SimpleClass):
             maps[c] = self.ap[i]
         return maps
 
+    # ===================== CUSTOMIZED MSE ========================
     def fitness(self):
         """Model fitness as a weighted combination of metrics."""
-        w = [0.0, 0.0, 0.1, 0.9]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
+        w = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # weights for [L2, AveMSE, P, R, mAP@0.5, mAP@0.5:0.95]
+        # original w = [0.0, 0.0, 0.0, 0.0, 0.1, 0.9] 
         return (np.array(self.mean_results()) * w).sum()
+    # ===================== CUSTOMIZED MSE ========================
 
     def update(self, results):
         """
@@ -833,7 +844,8 @@ class DetMetrics(SimpleClass):
         self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
         self.task = "detect"
 
-    def process(self, tp, conf, pred_cls, target_cls):
+    # ===================== CUSTOMIZED MSE ========================
+    def process(self, tp, conf, pred_cls, target_cls, average_mse, average_l2):
         """Process predicted results for object detection and update metrics."""
         results = ap_per_class(
             tp,
@@ -847,11 +859,19 @@ class DetMetrics(SimpleClass):
         )[2:]
         self.box.nc = len(self.names)
         self.box.update(results)
+        self.box.mse = average_mse
+        self.box.average_mse = average_mse.mean() if average_mse.size > 0 else 0.0
+        # TODO: add metric logging for euclidean distance
+        self.box.l2 = average_l2
+        self.box.avg_l2 = average_l2.mean() if average_l2.size > 0 else 0.0
+    # ===================== CUSTOMIZED MSE ========================
 
+    # ===================== CUSTOMIZED MSE ========================
     @property
     def keys(self):
         """Returns a list of keys for accessing specific metrics."""
-        return ["metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)", "metrics/mAP50-95(B)"]
+        return ["metrics/average_l2", "metrics/average_mse", "metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)", "metrics/mAP50-95(B)"]
+    # ===================== CUSTOMIZED MSE ========================
 
     def mean_results(self):
         """Calculate mean of detected objects & return precision, recall, mAP50, and mAP50-95."""

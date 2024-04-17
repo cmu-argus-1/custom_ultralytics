@@ -39,6 +39,9 @@ class DetectionValidator(BaseValidator):
         self.iouv = torch.linspace(0.5, 0.95, 10)  # iou vector for mAP@0.5:0.95
         self.niou = self.iouv.numel()
         self.lb = []  # for autolabelling
+        # ==========
+        self.mse = 0 
+        # ==========
 
     def preprocess(self, batch):
         """Preprocesses batch of images for YOLO training."""
@@ -75,11 +78,17 @@ class DetectionValidator(BaseValidator):
         self.confusion_matrix = ConfusionMatrix(nc=self.nc, conf=self.args.conf)
         self.seen = 0
         self.jdict = []
-        self.stats = dict(tp=[], conf=[], pred_cls=[], target_cls=[])
+        # ================================ CUSTOMIZED MSE =============================
+        self.stats = dict(tp=[], conf=[], pred_cls=[], target_cls=[], average_mse=[], average_l2=[])
+        # ================================ CUSTOMIZED MSE =============================
 
+    # ================================ CUSTOMIZED MSE =============================
     def get_desc(self):
         """Return a formatted string summarizing class metrics of YOLO model."""
-        return ("%22s" + "%11s" * 6) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)")
+        # return ("%22s" + "%11s" * 6) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)")
+        return ("%22s" + "%11s" + "%11s" + "%14s" + "%10s" + "%4s" + "%11s" + "%15s" + "%14s") % ("Class", "Images", "Instances", "Box(avg_l2", "avgMSE", "P", "R", "mAP50", "mAP50-95)")
+
+    # ================================ CUSTOMIZED MSE =============================
 
     def postprocess(self, preds):
         """Apply Non-maximum suppression to prediction outputs."""
@@ -113,6 +122,80 @@ class DetectionValidator(BaseValidator):
             pbatch["imgsz"], predn[:, :4], pbatch["ori_shape"], ratio_pad=pbatch["ratio_pad"]
         )  # native-space pred
         return predn
+    
+    # ================================ CUSTOMIZED MSE =============================
+    def _get_batch_mse(self, detections, gt_bboxes):
+        """
+        Return batch average mse
+
+        Args:
+            detections (torch.Tensor): Tensor of shape [N, 6] representing detections.
+                Each detection is of the format: x1, y1, x2, y2, conf, class.
+            gt_bboxes (torch.Tensor): Tensor of shape [M, 5] representing labels.
+                Each label is of the format: class, x1, y1, x2, y2.
+
+        Returns:
+            batch average mse 
+        """
+
+        # Extract class labels for detections and ground truths
+        det_classes = detections[:, -1].unsqueeze(1)  # Shape: [N, 1]
+        gt_classes = gt_bboxes[:, 0].unsqueeze(0)  # Shape: [1, M]
+        
+        # Find matches based on class 
+        class_matches = (det_classes == gt_classes).float()  # Shape: [N, M]
+        
+        # Calculate MSE for each detection against all ground truths
+        mse = torch.zeros(detections.shape[0], 1, device=detections.device)  
+        for i, det in enumerate(detections):
+            # Calculate squared differences for x1, y1, x2, y2
+            squared_diffs = (gt_bboxes[:, 1:] - det[:4])**2  
+            # Sum squared differences to get the MSE for each ground truth, then average
+            mse_per_gt = squared_diffs.mean(dim=1, keepdim=True)  
+            # Keep MSE for matching classes
+            masked_mse = mse_per_gt * class_matches[i].unsqueeze(1)
+            # Avoid division by zero when there are no class matches
+            if class_matches[i].sum() > 0:
+                mse[i] = masked_mse.sum() / class_matches[i].sum()
+        
+        return mse
+
+    def _get_batch_l2(self, detections, gt_bboxes):
+        """
+        Return batch average l2 err
+
+        Args:
+            detections (torch.Tensor): Tensor of shape [N, 6] representing detections.
+                Each detection is of the format: x1, y1, x2, y2, conf, class.
+            gt_bboxes (torch.Tensor): Tensor of shape [M, 5] representing labels.
+                Each label is of the format: class, x1, y1, x2, y2.
+
+        Returns:
+            batch average l2 err
+        """
+
+        # Extract class labels for detections and ground truths
+        det_classes = detections[:, -1].unsqueeze(1)  # Shape: [N, 1]
+        gt_classes = gt_bboxes[:, 0].unsqueeze(0)  # Shape: [1, M]
+        
+        # Find matches based on class 
+        class_matches = (det_classes == gt_classes).float()  # Shape: [N, M]
+        
+        # Calculate L2 norm for each detection against all ground truths
+        l2 = torch.zeros(detections.shape[0], 1, device=detections.device)  
+        for i, det in enumerate(detections):
+            # Calculate l2 norm for x1, y1, x2, y2 (already accounts for 2d points)
+            dists = np.linalg.norm(gt_bboxes[:, 1:].detach().cpu().numpy()-det[:4].detach().cpu().numpy(), axis=1) 
+            l2_per_gt = torch.from_numpy(dists).to(class_matches)
+            # Keep l2 for matching classes
+            masked_l2 = l2_per_gt * class_matches[i].unsqueeze(1)
+            # Avoid division by zero when there are no class matches
+            if class_matches[i].sum() > 0:
+                l2[i] = masked_l2.sum() / class_matches[i].sum() # should only be one class matched per detection??
+        
+        #print("l2 ", l2) # this is a list - average again?
+        return l2
+    # ================================ CUSTOMIZED MSE =============================
 
     def update_metrics(self, preds, batch):
         """Metrics."""
@@ -123,6 +206,8 @@ class DetectionValidator(BaseValidator):
                 conf=torch.zeros(0, device=self.device),
                 pred_cls=torch.zeros(0, device=self.device),
                 tp=torch.zeros(npr, self.niou, dtype=torch.bool, device=self.device),
+                average_mse=torch.zeros(0, 1, device=self.device),
+                average_l2=torch.zeros(0, 1, device=self.device)
             )
             pbatch = self._prepare_batch(si, batch)
             cls, bbox = pbatch.pop("cls"), pbatch.pop("bbox")
@@ -143,6 +228,14 @@ class DetectionValidator(BaseValidator):
             predn = self._prepare_pred(pred, pbatch)
             stat["conf"] = predn[:, 4]
             stat["pred_cls"] = predn[:, 5]
+            # ================================ CUSTOMIZED MSE =============================
+            if cls.dim() == 1:
+                cls_2d = cls.unsqueeze(-1) 
+            # Concatenate cls and bbox to form bbox_w_cls
+            bbox_w_cls = torch.cat((cls_2d, bbox), dim=1)  # Results in a tensor of shape [M, 5]
+            stat["average_mse"] = self._get_batch_mse(predn, bbox_w_cls)
+            stat["average_l2"] = self._get_batch_l2(predn, bbox_w_cls)
+            # ================================ CUSTOMIZED MSE =============================
 
             # Evaluate
             if nl:

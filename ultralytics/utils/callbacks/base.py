@@ -3,6 +3,11 @@
 
 from collections import defaultdict
 from copy import deepcopy
+import os
+
+#=================
+from ultralytics.utils import LOGGER
+#=================
 
 
 # Trainer callbacks ----------------------------------------------------------------------------------------------------
@@ -65,7 +70,20 @@ def on_model_save(trainer):
 
 def on_train_end(trainer):
     """Called when the training ends."""
-    pass
+    #LOGGER.info("This is the end of training")
+    mse_value = trainer.validator.mse  
+    #LOGGER.info(f"trainer.validator.mse: {mse_value}")
+    #LOGGER.info(f"trainer.save_dir: {trainer.save_dir}")
+
+    # Define the path for the new file within the save directory
+    mse_file_path = os.path.join(trainer.save_dir, "mse_value.txt")
+    
+    # Use 'with' statement for file operations to ensure proper handling of file opening/closing
+    with open(mse_file_path, 'w') as mse_file:
+        # Write the mse_value to file, converting it to string
+        mse_file.write(str(mse_value))
+    
+    LOGGER.info(f"MSE value saved to: {mse_file_path}")
 
 
 def on_params_update(trainer):
@@ -98,6 +116,14 @@ def on_val_batch_end(validator):
 
 def on_val_end(validator):
     """Called when the validation ends."""
+    #LOGGER.info("This is the end of validation")
+    stats = validator.get_stats()
+    avgMSE = stats['metrics/average_mse']
+    #LOGGER.info("stats['metrics/average_mse']:")
+    #LOGGER.info(avgMSE)
+    validator.mse += avgMSE
+    LOGGER.info("validator.mse:")
+    LOGGER.info(validator.mse)
     pass
 
 
@@ -210,7 +236,7 @@ def add_integration_callbacks(instance):
         from .tensorboard import callbacks as tb_cb
         from .wb import callbacks as wb_cb
 
-        callbacks_list.extend([clear_cb, comet_cb, dvc_cb, mlflow_cb, neptune_cb, tune_cb, tb_cb, wb_cb])
+        callbacks_list.extend([clear_cb, comet_cb, dvc_cb, mlflow_cb, neptune_cb, tune_cb, tb_cb, wb_cb]) # remove ray tune ??
 
     # Add the callbacks to the callbacks dictionary
     for callbacks in callbacks_list:
